@@ -52,19 +52,28 @@ public final class BinCatalogOverlay: OverlayProvider, @unchecked Sendable {
         return result
     }()
 
-    /// Names whose canonical catalog path lies under `directory`
-    /// AND which the running shell has actually installed at that
-    /// path. Drives the synthetic file listing the overlay vends.
+    /// Names of commands the running shell has installed directly under
+    /// `directory` — both catalog tools at their canonical path and any
+    /// off-catalog command an embedder added via `install(_:at:)`. Drives the
+    /// synthetic file listing the overlay vends, so an external package's
+    /// command (e.g. `sqlite3`, `gog`) shows up in `ls /usr/bin` without
+    /// needing a `BinCatalog` entry.
     private func registeredCatalogNames(in directory: String) -> [String] {
         let shell = Shell.bashCurrent
-        var names: [String] = []
+        var names = Set<String>()
+        // Catalog commands installed at their canonical path.
         for (name, canonical) in BinCatalog.knownPaths
             where (canonical as NSString).deletingLastPathComponent == directory {
             if shell.commandsByPath[canonical] != nil {
-                names.append(name)
+                names.insert(name)
             }
         }
-        return names
+        // Any other command installed directly under this directory.
+        for installedPath in shell.commandsByPath.keys
+            where (installedPath as NSString).deletingLastPathComponent == directory {
+            names.insert((installedPath as NSString).lastPathComponent)
+        }
+        return Array(names)
     }
 
     private func isLeafDir(_ path: String) -> Bool {
@@ -76,11 +85,18 @@ public final class BinCatalogOverlay: OverlayProvider, @unchecked Sendable {
     }
 
     private func isSynthesizedFile(_ path: String) -> Bool {
+        // Any command installed directly under one of the synthesized leaf
+        // directories (/bin, /usr/bin, /usr/local/bin) is a /bin file —
+        // catalog or not.
+        guard Shell.bashCurrent.commandsByPath[path] != nil else { return false }
+        let parent = (path as NSString).deletingLastPathComponent
+        if leafDirectories.contains(parent) { return true }
+        // Fallback: a catalog command at its canonical path (in case a known
+        // path lies outside the configured leaf directories).
         guard let canonical = BinCatalog.knownPaths[
             (path as NSString).lastPathComponent]
         else { return false }
         return canonical == path
-            && Shell.bashCurrent.commandsByPath[path] != nil
     }
 
     // MARK: OverlayProvider

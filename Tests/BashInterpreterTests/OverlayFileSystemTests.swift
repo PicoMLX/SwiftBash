@@ -31,6 +31,59 @@ import Foundation
         #expect(entries == ["bin", "local"])
     }
 
+    // MARK: Off-catalog command visibility (external packages)
+
+    /// An external package (e.g. SwiftSQLite) registers its command at an
+    /// explicit path via `install(_:at:)`. Even though the name has no
+    /// `BinCatalog` entry, the overlay must surface it in the directory
+    /// listing — and stat / read it — the way a real install would, so
+    /// `ls /usr/bin` shows `sqlite3` without needing a catalog edit.
+    @Test func offCatalogInstalledCommandAppearsInBinListing() async throws {
+        // Premise: the name is genuinely off-catalog, so this exercises the
+        // "any command installed under a leaf dir" path, not the catalog map.
+        #expect(BinCatalog.knownPaths["sqlite3"] == nil,
+                "test premise: `sqlite3` must be off-catalog")
+
+        let shell = Shell(fileSystem: InMemoryFileSystem())
+        shell.install(name: "sqlite3", at: "/usr/bin/sqlite3") { _ in .success }
+
+        try await shell.withCurrent {
+            // Shows up in the /usr/bin listing as a file.
+            let entries = try await shell.fileSystem.list("/usr/bin")
+            let entry = try #require(
+                entries.first { $0.name == "sqlite3" },
+                "off-catalog sqlite3 should show up in /usr/bin")
+            #expect(entry.metadata.kind == .file)
+
+            // Stat resolves it directly, too.
+            let meta = try await shell.fileSystem.metadata("/usr/bin/sqlite3")
+            #expect(meta?.kind == .file)
+            #expect(meta?.mode == 0o755)
+
+            // Reading the synthetic file returns the built-in marker stub.
+            let bytes = try await shell.fileSystem.readData("/usr/bin/sqlite3")
+            #expect(String(data: bytes, encoding: .utf8)?
+                .contains("sqlite3") == true)
+        }
+    }
+
+    /// The same visibility holds for `/usr/local/bin`, where SwiftPorts-style
+    /// tools (and other embedders, e.g. SwiftGog) land — proving the overlay
+    /// fix is general across every catalog leaf, not just `/usr/bin`.
+    @Test func offCatalogCommandVisibleInUsrLocalBin() async throws {
+        #expect(BinCatalog.knownPaths["gogcli"] == nil,
+                "test premise: `gogcli` must be off-catalog")
+
+        let shell = Shell(fileSystem: InMemoryFileSystem())
+        shell.install(name: "gogcli",
+                      at: "/usr/local/bin/gogcli") { _ in .success }
+
+        let names = try await shell.withCurrent {
+            try await shell.fileSystem.list("/usr/local/bin").map(\.name)
+        }
+        #expect(names.contains("gogcli"))
+    }
+
     @Test func chmodOnOverlayPathIsPermissionDenied() async throws {
         let shell = Shell(fileSystem: InMemoryFileSystem())
         await shell.withCurrent {
